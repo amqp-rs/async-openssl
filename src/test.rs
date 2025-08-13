@@ -3,8 +3,8 @@ use futures_io::AsyncWrite;
 use futures_util::future;
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslFiletype, SslMethod};
 use smol::{
-    io::{AsyncReadExt, AsyncWriteExt},
     Async,
+    io::{AsyncReadExt, AsyncWriteExt},
 };
 use std::{
     io,
