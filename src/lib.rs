@@ -14,7 +14,7 @@ use std::{
     fmt, future,
     io::{self, Read, Write},
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 #[cfg(test)]
@@ -22,7 +22,7 @@ mod test;
 
 struct StreamWrapper<S> {
     stream: S,
-    context: usize,
+    waker: Waker,
 }
 
 impl<S> fmt::Debug for StreamWrapper<S>
@@ -37,12 +37,10 @@ where
 impl<S> StreamWrapper<S> {
     /// # Safety
     ///
-    /// Must be called with `context` set to a valid pointer to a live `Context` object, and the
-    /// wrapper must be pinned in memory.
-    unsafe fn parts(&mut self) -> (Pin<&mut S>, &mut Context<'_>) {
-        debug_assert_ne!(self.context, 0);
-        let stream = Pin::new_unchecked(&mut self.stream);
-        let context = &mut *(self.context as *mut _);
+    /// The wrapper must be pinned in memory.
+    unsafe fn parts(&mut self) -> (Pin<&mut S>, Context<'_>) {
+        let stream = unsafe { Pin::new_unchecked(&mut self.stream) };
+        let context = Context::from_waker(&self.waker);
         (stream, context)
     }
 }
@@ -52,8 +50,8 @@ where
     S: AsyncRead,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let (stream, cx) = unsafe { self.parts() };
-        match stream.poll_read(cx, buf)? {
+        let (stream, mut cx) = unsafe { self.parts() };
+        match stream.poll_read(&mut cx, buf)? {
             Poll::Ready(nread) => Ok(nread),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
@@ -65,16 +63,16 @@ where
     S: AsyncWrite,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let (stream, cx) = unsafe { self.parts() };
-        match stream.poll_write(cx, buf) {
+        let (stream, mut cx) = unsafe { self.parts() };
+        match stream.poll_write(&mut cx, buf) {
             Poll::Ready(r) => r,
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let (stream, cx) = unsafe { self.parts() };
-        match stream.poll_flush(cx) {
+        let (stream, mut cx) = unsafe { self.parts() };
+        match stream.poll_flush(&mut cx) {
             Poll::Ready(r) => r,
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
@@ -109,7 +107,14 @@ where
 {
     /// Like [`SslStream::new`](ssl::SslStream::new).
     pub fn new(ssl: Ssl, stream: S) -> Result<Self, ErrorStack> {
-        ssl::SslStream::new(ssl, StreamWrapper { stream, context: 0 }).map(SslStream)
+        ssl::SslStream::new(
+            ssl,
+            StreamWrapper {
+                stream,
+                waker: Waker::noop().clone(),
+            },
+        )
+        .map(SslStream)
     }
 
     /// Like [`SslStream::connect`](ssl::SslStream::connect).
@@ -227,10 +232,8 @@ impl<S> SslStream<S> {
         F: FnOnce(&mut ssl::SslStream<StreamWrapper<S>>) -> R,
     {
         let this = unsafe { self.get_unchecked_mut() };
-        this.0.get_mut().context = ctx as *mut _ as usize;
-        let r = f(&mut this.0);
-        this.0.get_mut().context = 0;
-        r
+        this.0.get_mut().waker = ctx.waker().clone();
+        f(&mut this.0)
     }
 }
 
