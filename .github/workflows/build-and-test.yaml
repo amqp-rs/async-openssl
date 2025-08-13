@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [nightly, beta, stable, 1.85.0]
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +23,14 @@ jobs:
             toolchain: ${{ matrix.rust }}
             profile: minimal
             override: true
+
+      - name: Step VCPKG
+        run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+        if: startsWith(matrix.os, 'windows')
+
+      - name: Install OpenSSL
+        run: vcpkg install openssl:x64-windows-static-md
+        if: startsWith(matrix.os, 'windows')
 
       - name: Run cargo check
         uses: actions-rs/cargo@v1
@@ -38,6 +46,7 @@ jobs:
           args: -Z features=dev_dep
 
       - name: Run cargo test
+        if: matrix.os != 'windows-latest'
         uses: actions-rs/cargo@v1
         with:
           command: test
