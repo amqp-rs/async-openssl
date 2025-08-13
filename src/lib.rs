@@ -20,26 +20,23 @@ use std::{
 #[cfg(test)]
 mod test;
 
-struct StreamWrapper<S> {
+struct StreamWrapper<S: Unpin> {
     stream: S,
     waker: Waker,
 }
 
 impl<S> fmt::Debug for StreamWrapper<S>
 where
-    S: fmt::Debug,
+    S: fmt::Debug + Unpin,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.stream.fmt(fmt)
     }
 }
 
-impl<S> StreamWrapper<S> {
-    /// # Safety
-    ///
-    /// The wrapper must be pinned in memory.
-    unsafe fn parts(&mut self) -> (Pin<&mut S>, Context<'_>) {
-        let stream = unsafe { Pin::new_unchecked(&mut self.stream) };
+impl<S: Unpin> StreamWrapper<S> {
+    fn parts(&mut self) -> (Pin<&mut S>, Context<'_>) {
+        let stream = Pin::new(&mut self.stream);
         let context = Context::from_waker(&self.waker);
         (stream, context)
     }
@@ -47,10 +44,10 @@ impl<S> StreamWrapper<S> {
 
 impl<S> Read for StreamWrapper<S>
 where
-    S: AsyncRead,
+    S: AsyncRead + Unpin,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let (stream, mut cx) = unsafe { self.parts() };
+        let (stream, mut cx) = self.parts();
         match stream.poll_read(&mut cx, buf)? {
             Poll::Ready(nread) => Ok(nread),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
@@ -60,10 +57,10 @@ where
 
 impl<S> Write for StreamWrapper<S>
 where
-    S: AsyncWrite,
+    S: AsyncWrite + Unpin,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let (stream, mut cx) = unsafe { self.parts() };
+        let (stream, mut cx) = self.parts();
         match stream.poll_write(&mut cx, buf) {
             Poll::Ready(r) => r,
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
@@ -71,7 +68,7 @@ where
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let (stream, mut cx) = unsafe { self.parts() };
+        let (stream, mut cx) = self.parts();
         match stream.poll_flush(&mut cx) {
             Poll::Ready(r) => r,
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
@@ -99,11 +96,11 @@ fn cvt_ossl<T>(r: Result<T, ssl::Error>) -> Poll<Result<T, ssl::Error>> {
 
 /// An asynchronous version of [`openssl::ssl::SslStream`].
 #[derive(Debug)]
-pub struct SslStream<S>(ssl::SslStream<StreamWrapper<S>>);
+pub struct SslStream<S: Unpin>(ssl::SslStream<StreamWrapper<S>>);
 
 impl<S> SslStream<S>
 where
-    S: AsyncRead + AsyncWrite,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     /// Like [`SslStream::new`](ssl::SslStream::new).
     pub fn new(ssl: Ssl, stream: S) -> Result<Self, ErrorStack> {
@@ -206,7 +203,7 @@ where
     }
 }
 
-impl<S> SslStream<S> {
+impl<S: Unpin> SslStream<S> {
     /// Returns a shared reference to the `Ssl` object associated with this stream.
     pub fn ssl(&self) -> &SslRef {
         self.0.ssl()
@@ -224,7 +221,7 @@ impl<S> SslStream<S> {
 
     /// Returns a pinned mutable reference to the underlying stream.
     pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
-        unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0.get_mut().stream) }
+        Pin::new(&mut self.get_mut().0.get_mut().stream)
     }
 
     fn with_context<F, R>(self: Pin<&mut Self>, ctx: &mut Context<'_>, f: F) -> R
@@ -239,7 +236,7 @@ impl<S> SslStream<S> {
 
 impl<S> AsyncRead for SslStream<S>
 where
-    S: AsyncRead + AsyncWrite,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -252,7 +249,7 @@ where
 
 impl<S> AsyncWrite for SslStream<S>
 where
-    S: AsyncRead + AsyncWrite,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
     fn poll_write(self: Pin<&mut Self>, ctx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
         self.with_context(ctx, |s| cvt(s.write(buf)))
