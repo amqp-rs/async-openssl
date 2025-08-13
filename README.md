@@ -1,8 +1,8 @@
-# tokio-openssl
+# async-openssl
 
-An implementation of SSL streams for Tokio built on top of the [`openssl` crate]
+An implementation of SSL streams for async IO built on top of the [`openssl` crate]
 
-[Documentation](https://docs.rs/tokio-openssl)
+[Documentation](https://docs.rs/async-openssl)
 
 [`openssl` crate]: https://github.com/sfackler/rust-openssl
 
@@ -17,8 +17,10 @@ This project is licensed under either of
 
 at your option.
 
+This started as a fork of [tokio-openssl](https://github.com/tokio-rs/tokio-openssl).
+
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in tokio-openssl by you, as defined in the Apache-2.0 license,
+for inclusion in async-openssl by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.

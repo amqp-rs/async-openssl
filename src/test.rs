@@ -1,15 +1,20 @@
 use crate::SslStream;
+use futures_io::AsyncWrite;
 use futures_util::future;
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslFiletype, SslMethod};
-use std::net::ToSocketAddrs;
-use std::pin::Pin;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use smol::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    Async,
+};
+use std::{
+    io,
+    net::{TcpListener, TcpStream, ToSocketAddrs},
+    pin::Pin,
+};
 
-#[tokio::test]
-async fn google() {
+async fn test_google() -> io::Result<()> {
     let addr = "google.com:443".to_socket_addrs().unwrap().next().unwrap();
-    let stream = TcpStream::connect(&addr).await.unwrap();
+    let stream = Async::<TcpStream>::connect(addr).await?;
 
     let ssl = SslConnector::builder(SslMethod::tls())
         .unwrap()
@@ -32,12 +37,18 @@ async fn google() {
     // any response code is fine
     assert!(response.starts_with("HTTP/1.0 "));
     assert!(response.ends_with("</html>") || response.ends_with("</HTML>"));
+
+    Ok(())
 }
 
-#[tokio::test]
-async fn server() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+#[test]
+fn google() {
+    smol::block_on(test_google()).unwrap();
+}
+
+async fn test_server() -> io::Result<()> {
+    let listener = Async::<TcpListener>::bind(([127, 0, 0, 1], 0))?;
+    let addr = listener.get_ref().local_addr().unwrap();
 
     let server = async move {
         let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
@@ -61,7 +72,7 @@ async fn server() {
 
         stream.write_all(b"jkl;").await.unwrap();
 
-        future::poll_fn(|ctx| Pin::new(&mut stream).poll_shutdown(ctx))
+        future::poll_fn(|ctx| Pin::new(&mut stream).poll_close(ctx))
             .await
             .unwrap()
     };
@@ -76,7 +87,7 @@ async fn server() {
             .into_ssl("localhost")
             .unwrap();
 
-        let stream = TcpStream::connect(&addr).await.unwrap();
+        let stream = Async::<TcpStream>::connect(addr).await.unwrap();
         let mut stream = SslStream::new(ssl, stream).unwrap();
 
         Pin::new(&mut stream).connect().await.unwrap();
@@ -89,4 +100,11 @@ async fn server() {
     };
 
     future::join(server, client).await;
+
+    Ok(())
+}
+
+#[test]
+fn server() {
+    smol::block_on(test_server()).unwrap();
 }
