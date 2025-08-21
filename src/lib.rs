@@ -228,7 +228,7 @@ impl<S: Unpin> SslStream<S> {
     where
         F: FnOnce(&mut ssl::SslStream<StreamWrapper<S>>) -> R,
     {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         this.0.get_mut().waker = ctx.waker().clone();
         f(&mut this.0)
     }
