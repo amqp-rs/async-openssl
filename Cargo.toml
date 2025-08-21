@@ -1,6 +1,6 @@
 [package]
 name = "async-openssl"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Alex Crichton <alex@alexcrichton.com>", "Marc-Antoine Perennou <Marc-Antoine@Perennou.com>"]
 description = "An implementation of SSL streams for async IO backed by OpenSSL"
