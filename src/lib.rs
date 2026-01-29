@@ -1,7 +1,7 @@
 //! Async TLS streams backed by OpenSSL.
 //!
 //! This crate provides a wrapper around the [`openssl`] crate's [`SslStream`](ssl::SslStream) type
-//! that works with with [`futures-io`]'s [`AsyncRead`] and [`AsyncWrite`] traits rather than std's
+//! that works with with [`futures_io`]'s [`AsyncRead`] and [`AsyncWrite`] traits rather than std's
 //! blocking [`Read`] and [`Write`] traits.
 #![warn(missing_docs)]
 
