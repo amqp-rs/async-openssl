@@ -14,7 +14,7 @@ rust-version = "1.85.0"
 
 [dependencies]
 futures-io = "^0.3"
-openssl = "^0.10.72"
+openssl = "^0.10.78"
 openssl-sys = "^0.9"
 
 [dev-dependencies]
