@@ -260,6 +260,9 @@ where
     }
 
     fn poll_close(mut self: Pin<&mut Self>, ctx: &mut Context) -> Poll<io::Result<()>> {
+        // We send close_notify but do not wait for the peer's reply before closing the
+        // underlying stream. This is permitted by RFC 8446 §6.1 and avoids a half-close
+        // deadlock, but it means any in-flight data from the peer is silently discarded.
         match self.as_mut().with_context(ctx, |s| s.shutdown()) {
             Ok(ShutdownResult::Sent) | Ok(ShutdownResult::Received) => {}
             Err(ref e) if e.code() == ErrorCode::ZERO_RETURN => {}
