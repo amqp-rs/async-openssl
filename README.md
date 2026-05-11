@@ -1,26 +1,17 @@
-# async-openssl
+<div align="center">
 
-An implementation of SSL streams for async IO built on top of the [`openssl` crate]
+[![API Docs](https://docs.rs/async-openssl/badge.svg)](https://docs.rs/async-openssl)
+[![Build status](https://github.com/amqp-rs/async-openssl/workflows/Build%20and%20test/badge.svg)](https://github.com/amqp-rs/async-openssl/actions)
+[![Downloads](https://img.shields.io/crates/d/async-openssl.svg)](https://crates.io/crates/async-openssl)
+[![Dependency Status](https://deps.rs/repo/github/amqp-rs/async-openssl/status.svg)](https://deps.rs/repo/github/amqp-rs/async-openssl)
+[![LICENSE](https://img.shields.io/crates/l/async-openssl)](LICENSE-MIT)
 
-[Documentation](https://docs.rs/async-openssl)
+ <strong>
+   An implementation of SSL streams for async IO backed by OpenSSL.
+ </strong>
 
-[`openssl` crate]: https://github.com/sfackler/rust-openssl
+</div>
 
-# License
-
-This project is licensed under either of
-
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   http://opensource.org/licenses/MIT)
-
-at your option.
+<br />
 
 This started as a fork of [tokio-openssl](https://github.com/tokio-rs/tokio-openssl).
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in async-openssl by you, as defined in the Apache-2.0 license,
-shall be dual licensed as above, without any additional terms or conditions.

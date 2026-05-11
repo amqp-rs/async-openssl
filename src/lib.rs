@@ -3,7 +3,9 @@
 //! This crate provides a wrapper around the [`openssl`] crate's [`SslStream`](ssl::SslStream) type
 //! that works with with [`futures_io`]'s [`AsyncRead`] and [`AsyncWrite`] traits rather than std's
 //! blocking [`Read`] and [`Write`] traits.
-#![warn(missing_docs)]
+#![deny(missing_docs, missing_debug_implementations, unsafe_code)]
+#![warn(unreachable_pub, unused_qualifications, unused_lifetimes)]
+#![warn(clippy::must_use_candidate, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use futures_io::{AsyncRead, AsyncWrite};
 use openssl::{
