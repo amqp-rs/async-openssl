@@ -28,7 +28,7 @@ mod test;
 
 struct StreamWrapper<S: Unpin> {
     stream: S,
-    waker: Waker,
+    waker: Option<Waker>,
 }
 
 impl<S> fmt::Debug for StreamWrapper<S>
@@ -43,7 +43,7 @@ where
 impl<S: Unpin> StreamWrapper<S> {
     fn parts(&mut self) -> (Pin<&mut S>, Context<'_>) {
         let stream = Pin::new(&mut self.stream);
-        let context = Context::from_waker(&self.waker);
+        let context = Context::from_waker(self.waker.as_ref().unwrap_or(Waker::noop()));
         (stream, context)
     }
 }
@@ -114,7 +114,7 @@ where
             ssl,
             StreamWrapper {
                 stream,
-                waker: Waker::noop().clone(),
+                waker: None,
             },
         )
         .map(SslStream)
@@ -235,7 +235,7 @@ impl<S: Unpin> SslStream<S> {
         F: FnOnce(&mut ssl::SslStream<StreamWrapper<S>>) -> R,
     {
         let this = self.get_mut();
-        this.0.get_mut().waker = ctx.waker().clone();
+        this.0.get_mut().waker = Some(ctx.waker().clone());
         f(&mut this.0)
     }
 }
