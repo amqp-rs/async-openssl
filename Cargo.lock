@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "async-openssl"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "futures-io",
  "futures-util",
