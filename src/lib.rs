@@ -211,11 +211,13 @@ where
 
 impl<S: Unpin> SslStream<S> {
     /// Returns a shared reference to the `Ssl` object associated with this stream.
+    #[must_use]
     pub fn ssl(&self) -> &SslRef {
         self.0.ssl()
     }
 
     /// Returns a shared reference to the underlying stream.
+    #[must_use]
     pub fn get_ref(&self) -> &S {
         &self.0.get_ref().stream
     }
@@ -226,6 +228,7 @@ impl<S: Unpin> SslStream<S> {
     }
 
     /// Returns a pinned mutable reference to the underlying stream.
+    #[must_use]
     pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
         Pin::new(&mut self.get_mut().0.get_mut().stream)
     }
