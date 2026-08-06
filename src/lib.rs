@@ -43,6 +43,8 @@ where
 impl<S: Unpin> StreamWrapper<S> {
     fn parts(&mut self) -> (Pin<&mut S>, Context<'_>) {
         let stream = Pin::new(&mut self.stream);
+        // The wrapper is only ever driven from inside `SslStream::with_context`, which installs
+        // the current waker first, so the fallback is unreachable in practice.
         let context = Context::from_waker(self.waker.as_ref().unwrap_or(Waker::noop()));
         (stream, context)
     }
@@ -101,8 +103,22 @@ fn cvt_ossl<T>(r: Result<T, ssl::Error>) -> Poll<Result<T, ssl::Error>> {
 }
 
 /// An asynchronous version of [`openssl::ssl::SslStream`].
-#[derive(Debug)]
-pub struct SslStream<S: Unpin>(ssl::SslStream<StreamWrapper<S>>);
+pub struct SslStream<S: Unpin> {
+    inner: ssl::SslStream<StreamWrapper<S>>,
+    /// Whether `close_notify` has already been handed to the peer by
+    /// [`poll_close`](AsyncWrite::poll_close). See that method for why this has to be remembered
+    /// across polls.
+    close_notify_sent: bool,
+}
+
+impl<S> fmt::Debug for SslStream<S>
+where
+    S: fmt::Debug + Unpin,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("SslStream").field(&self.inner).finish()
+    }
+}
 
 impl<S> SslStream<S>
 where
@@ -117,7 +133,10 @@ where
                 waker: None,
             },
         )
-        .map(SslStream)
+        .map(|inner| SslStream {
+            inner,
+            close_notify_sent: false,
+        })
     }
 
     /// Like [`SslStream::connect`](ssl::SslStream::connect).
@@ -162,6 +181,12 @@ where
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, ssl::Error>> {
+        // `SSL_peek_ex` reports a zero-length peek as a failure with `WANT_READ`, which we would
+        // translate into a `Pending` that never resolves. Nothing can be peeked into an empty
+        // buffer anyway, so answer directly and match what `poll_read` does for an empty buffer.
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.with_context(cx, |s| cvt_ossl(s.ssl_peek(buf)))
     }
 
@@ -213,24 +238,32 @@ impl<S: Unpin> SslStream<S> {
     /// Returns a shared reference to the `Ssl` object associated with this stream.
     #[must_use]
     pub fn ssl(&self) -> &SslRef {
-        self.0.ssl()
+        self.inner.ssl()
     }
 
     /// Returns a shared reference to the underlying stream.
     #[must_use]
     pub fn get_ref(&self) -> &S {
-        &self.0.get_ref().stream
+        &self.inner.get_ref().stream
     }
 
     /// Returns a mutable reference to the underlying stream.
+    ///
+    /// # Warning
+    ///
+    /// Reading from or writing to the underlying stream directly will corrupt the TLS session.
     pub fn get_mut(&mut self) -> &mut S {
-        &mut self.0.get_mut().stream
+        &mut self.inner.get_mut().stream
     }
 
     /// Returns a pinned mutable reference to the underlying stream.
+    ///
+    /// # Warning
+    ///
+    /// Reading from or writing to the underlying stream directly will corrupt the TLS session.
     #[must_use]
     pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
-        Pin::new(&mut self.get_mut().0.get_mut().stream)
+        Pin::new(&mut self.get_mut().inner.get_mut().stream)
     }
 
     fn with_context<F, R>(self: Pin<&mut Self>, ctx: &mut Context<'_>, f: F) -> R
@@ -238,8 +271,13 @@ impl<S: Unpin> SslStream<S> {
         F: FnOnce(&mut ssl::SslStream<StreamWrapper<S>>) -> R,
     {
         let this = self.get_mut();
-        this.0.get_mut().waker = Some(ctx.waker().clone());
-        f(&mut this.0)
+        match &mut this.inner.get_mut().waker {
+            // `Waker::clone_from` skips the refcount traffic when the task did not change, which
+            // is the common case across the repeated polls of a single read or write.
+            Some(waker) => waker.clone_from(ctx.waker()),
+            waker @ None => *waker = Some(ctx.waker().clone()),
+        }
+        f(&mut this.inner)
     }
 }
 
@@ -272,15 +310,26 @@ where
         // We send close_notify but do not wait for the peer's reply before closing the
         // underlying stream. This is permitted by RFC 8446 §6.1 and avoids a half-close
         // deadlock, but it means any in-flight data from the peer is silently discarded.
-        match self.as_mut().with_context(ctx, |s| s.shutdown()) {
-            Ok(ShutdownResult::Sent) | Ok(ShutdownResult::Received) => {}
-            Err(ref e) if e.code() == ErrorCode::ZERO_RETURN => {}
-            Err(ref e) if e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_WRITE => {
-                return Poll::Pending;
+        //
+        // Sending it is a one-shot step, so it has to be remembered: once our close_notify is
+        // out, a further `SSL_shutdown` moves on to the second phase and waits for the peer's
+        // close_notify, reporting `WANT_READ` until it arrives. Calling it again on a re-poll
+        // would therefore reintroduce exactly the half-close deadlock we mean to avoid, and the
+        // underlying stream would never be closed.
+        if !self.close_notify_sent {
+            match self.as_mut().with_context(ctx, |s| s.shutdown()) {
+                Ok(ShutdownResult::Sent | ShutdownResult::Received) => {}
+                Err(ref e) if e.code() == ErrorCode::ZERO_RETURN => {}
+                Err(ref e)
+                    if e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_WRITE =>
+                {
+                    return Poll::Pending;
+                }
+                Err(e) => {
+                    return Poll::Ready(Err(e.into_io_error().unwrap_or_else(io::Error::other)));
+                }
             }
-            Err(e) => {
-                return Poll::Ready(Err(e.into_io_error().unwrap_or_else(io::Error::other)));
-            }
+            self.as_mut().get_mut().close_notify_sent = true;
         }
 
         self.get_pin_mut().poll_close(ctx)
