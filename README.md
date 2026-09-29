@@ -19,6 +19,27 @@ Forked from [tokio-openssl](https://github.com/tokio-rs/tokio-openssl) and
 reworked to target the runtime-agnostic `futures-io` traits rather than the
 tokio-specific ones.
 
+## Pending writes
+
+When OpenSSL pauses a write, `SslStream` retains the staged bytes and retries
+them before the next TLS operation, including a read or peek. Use
+`SslStream::write_cancellable` when you need a new write to remain distinct
+after cancelling an earlier write with the **same buffer**. For writes through
+`AsyncWrite`, flush before reusing that buffer as a separate operation: the
+trait cannot distinguish that call from another poll of the cancelled write.
+The same rule applies to `poll_write_early_data`; its async `write_early_data`
+wrapper distinguishes separate calls.
+If an interleaved read finishes a pending write, the original writer is woken
+and receives its byte count when polled again.
+
+Each write stages at most 16 KiB in a reusable buffer. Large `write_all` calls
+advance one chunk at a time, so copying grows linearly with the input size.
+An OpenSSL short write can cause the unsent part of a chunk to be staged again.
+If a pending write completes with a positive short count, the original caller
+receives that count and remains responsible for submitting the unsent suffix.
+If a write is cancelled while pending, only its staged chunk is retained; the
+rest of the original input has not been accepted.
+
 ## Example
 
 ```rust,no_run
@@ -37,8 +58,6 @@ async fn connect(host: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-
-For a complete runnable example see [`examples/`](examples/).
 
 ## License
 
