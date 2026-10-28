@@ -31,6 +31,8 @@ CI denies warnings: builds and tests run with `RUSTFLAGS=-D warnings`, and the l
 
 The workflows in `.github/workflows/` delegate to the shared composite actions in [`amqp-rs/actions`](https://github.com/amqp-rs/actions) at `@main`. That reference is intentionally unpinned: `amqp-rs/actions` is our own repository and keeps action bumps in sync across all amqp-rs crates. The third-party actions it wraps use major tags and are bumped there by Dependabot, which is why this repository's Dependabot config covers `cargo` only; the exceptions are `dtolnay/rust-toolchain`, referenced by branch as upstream recommends, and the tools pinned through action inputs (`actionlint`, `cargo-hack`), bumped by hand there. Do not pin actions to a SHA or tag, and do not report unpinned actions as review or audit findings.
 
+The build workflow has a 30-minute job timeout, unlike the other amqp-rs crates: a test stuck inside one poll is caught by the tests' own `join`, but anything else that hangs would otherwise run for GitHub's six hours.
+
 Minimum supported Rust version: **1.85.0** (edition 2024). Supported TLS libraries: OpenSSL 1.1.0 or newer and LibreSSL 3.5 or newer, as the openssl-sys floor allows; the early-data methods need OpenSSL 1.1.1 or newer.
 
 ## Architecture
@@ -41,4 +43,4 @@ This is a small, focused crate: a single public type `SslStream<S>` wrapping `op
 
 **Feature gate:** `build.rs` detects the OpenSSL version via `DEP_OPENSSL_VERSION_NUMBER` and sets the `ossl111` cfg flag for OpenSSL ≥ 1.1.1. `openssl-sys` must remain a direct target dependency so Cargo passes that metadata to the build script. Methods guarded by `#[cfg(ossl111)]` expose TLS 1.3 early-data support; LibreSSL only has stubs for early data, so they are not built there.
 
-**Tests** (`src/test.rs`) use `smol` as the async runtime. The TLS tests use local servers with the self-signed cert/key in `tests/`; they do not require an outbound connection. A version check catches an `ossl111` cfg that does not match the linked library.
+**Tests** (`src/test.rs`) use `smol` as the async runtime. The TLS tests use local servers with the self-signed cert/key in `tests/`, over sockets without Nagle's algorithm; they do not require an outbound connection. Each TLS peer, and each client, runs on its own thread and executor (`Peer::run`), so the peer's I/O cannot re-poll the client and mask a lost wakeup. Both sides run under `deadline`, which polls its timer first, so a hang fails the test instead of passing late, and `join` fails a thread that never returns from a poll. `Faulty` wraps each transport to inject `Faults`, such as a pending close. The acceptor negotiates TLS 1.3 unless a test asks for TLS 1.2, and sends no session tickets unless the client reads them: unread tickets make the client's close reset the connection. A version check catches an `ossl111` cfg that does not match the linked library.

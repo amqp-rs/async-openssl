@@ -16,6 +16,8 @@ permissions:
 jobs:
   build_and_test:
     runs-on: ${{ matrix.os }}
+    # Fail a hung test run long before GitHub's 6-hour default.
+    timeout-minutes: 30
     continue-on-error: ${{ matrix.rust == 'nightly' }}
     strategy:
       fail-fast: false

@@ -84,7 +84,6 @@ name = "async-openssl"
 version = "0.2.10"
 dependencies = [
  "futures-io",
- "futures-util",
  "openssl",
  "openssl-sys",
  "smol",
@@ -273,23 +272,6 @@ dependencies = [
  "futures-core",
  "futures-io",
  "parking",
- "pin-project-lite",
-]
-
-[[package]]
-name = "futures-task"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
-
-[[package]]
-name = "futures-util"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
-dependencies = [
- "futures-core",
- "futures-task",
  "pin-project-lite",
 ]
 

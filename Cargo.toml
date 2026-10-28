@@ -22,9 +22,5 @@ openssl-sys = "^0.9.114"
 [dev-dependencies]
 smol = "^2.0"
 
-[dev-dependencies.futures-util]
-version = "^0.3"
-default-features = false
-
 [package.metadata.docs.rs]
 all-features = true
