@@ -36,48 +36,6 @@ fn client_ssl() -> Ssl {
         .unwrap()
 }
 
-#[cfg(target_os = "windows")] // certificate chain not configured in CI on Windows, noop
-async fn test_google() -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-async fn test_google() -> io::Result<()> {
-    use std::net::ToSocketAddrs;
-
-    let addr = "google.com:443".to_socket_addrs().unwrap().next().unwrap();
-    let stream = Async::<TcpStream>::connect(addr).await?;
-
-    let ssl = SslConnector::builder(SslMethod::tls())
-        .unwrap()
-        .build()
-        .configure()
-        .unwrap()
-        .into_ssl("google.com")
-        .unwrap();
-    let mut stream = SslStream::new(ssl, stream).unwrap();
-
-    Pin::new(&mut stream).connect().await.unwrap();
-
-    stream.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
-
-    let mut buf = vec![];
-    stream.read_to_end(&mut buf).await.unwrap();
-    let response = String::from_utf8_lossy(&buf);
-    let response = response.trim_end();
-
-    // any response code is fine
-    assert!(response.starts_with("HTTP/1.0 "));
-    assert!(response.ends_with("</html>") || response.ends_with("</HTML>"));
-
-    Ok(())
-}
-
-#[test]
-fn google() {
-    smol::block_on(test_google()).unwrap();
-}
-
 async fn test_server() -> io::Result<()> {
     let listener = Async::<TcpListener>::bind(([127, 0, 0, 1], 0))?;
     let addr = listener.get_ref().local_addr().unwrap();

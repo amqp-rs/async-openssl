@@ -39,4 +39,4 @@ This is a small, focused crate: a single public type `SslStream<S>` wrapping `op
 
 **Feature gate:** `build.rs` detects the OpenSSL version via `DEP_OPENSSL_VERSION_NUMBER` and sets the `ossl111` cfg flag for OpenSSL ≥ 1.1.1. Methods guarded by `#[cfg(ossl111)]` expose TLS 1.3 early-data support.
 
-**Tests** (`src/test.rs`) use `smol` as the async runtime. The `google` test makes a live outbound TLS connection; the `server` test spins up a local TLS server using the self-signed cert/key in `tests/`.
+**Tests** (`src/test.rs`) use `smol` as the async runtime. The TLS tests use local servers with the self-signed cert/key in `tests/`; they do not require an outbound connection.
