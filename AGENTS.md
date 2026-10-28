@@ -31,7 +31,7 @@ CI denies warnings: builds and tests run with `RUSTFLAGS=-D warnings`, and the l
 
 The workflows in `.github/workflows/` delegate to the shared composite actions in [`amqp-rs/actions`](https://github.com/amqp-rs/actions) at `@main`. That reference is intentionally unpinned: `amqp-rs/actions` is our own repository and keeps action bumps in sync across all amqp-rs crates. The third-party actions it wraps use major tags and are bumped there by Dependabot, which is why this repository's Dependabot config covers `cargo` only; the exceptions are `dtolnay/rust-toolchain`, referenced by branch as upstream recommends, and the tools pinned through action inputs (`actionlint`, `cargo-hack`), bumped by hand there. Do not pin actions to a SHA or tag, and do not report unpinned actions as review or audit findings.
 
-Minimum supported Rust version: **1.85.0** (edition 2024).
+Minimum supported Rust version: **1.85.0** (edition 2024). Supported TLS libraries: OpenSSL 1.1.0 or newer and LibreSSL 3.5 or newer, as the openssl-sys floor allows; the early-data methods need OpenSSL 1.1.1 or newer.
 
 ## Architecture
 

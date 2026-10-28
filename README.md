@@ -17,10 +17,12 @@ runtime that builds on the `futures-io` ecosystem.
 
 Forked from [tokio-openssl](https://github.com/tokio-rs/tokio-openssl) and
 reworked to target the runtime-agnostic `futures-io` traits rather than the
-tokio-specific ones.
+tokio-specific ones. It builds against OpenSSL 1.1.0 or newer and LibreSSL 3.5
+or newer.
 
 ## Upgrading from 0.2.10
 
+- OpenSSL 1.0 and LibreSSL older than 3.5 are no longer supported.
 - The early-data methods are back, on OpenSSL 1.1.1 or newer only: 0.2.10 never
   compiled them. LibreSSL only has stubs for them, so they are not provided
   there.
