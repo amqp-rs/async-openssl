@@ -24,21 +24,31 @@ tokio-specific ones.
 ```rust,no_run
 use async_openssl::SslStream;
 use openssl::ssl::{SslConnector, SslMethod};
+use smol::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 use std::pin::Pin;
 
-async fn connect(host: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use smol::net::TcpStream;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    smol::block_on(async {
+        let connector = SslConnector::builder(SslMethod::tls())?.build();
+        let ssl = connector.configure()?.into_ssl("example.com")?;
+        let stream = TcpStream::connect(("example.com", 443)).await?;
+        let mut stream = SslStream::new(ssl, stream)?;
+        Pin::new(&mut stream).connect().await?;
 
-    let connector = SslConnector::builder(SslMethod::tls())?.build();
-    let stream = TcpStream::connect((host, 443u16)).await?;
-    let ssl = connector.configure()?.into_ssl(host)?;
-    let mut stream = SslStream::new(ssl, stream)?;
-    Pin::new(&mut stream).connect().await?;
-    Ok(())
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await?;
+        println!("{}", String::from_utf8_lossy(&response));
+        stream.close().await?;
+        Ok(())
+    })
 }
 ```
-
-For a complete runnable example see [`examples/`](examples/).
 
 ## License
 

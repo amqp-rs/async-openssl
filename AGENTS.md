@@ -5,17 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Check
-cargo check --all --bins --examples --tests --all-features
+# Check (every target, as CI does)
+cargo check --workspace --all-targets --all-features
 
-# Run tests
+# Run tests, including the README example as a doctest (compiled, not run)
 cargo test
 
 # Run a single test
 cargo test <test_name>
 
-# Lint
-cargo clippy --all-features -- -W clippy::all
+# Lint (CI denies clippy warnings)
+cargo clippy --all-features --all-targets -- -D warnings
 
 # Format
 cargo fmt
@@ -27,7 +27,7 @@ cargo fmt --all -- --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --all-features
 ```
 
-CI runs with `RUSTFLAGS=-D warnings`, so all warnings are treated as errors.
+CI denies warnings: builds and tests run with `RUSTFLAGS=-D warnings`, and the lint job runs clippy (on every target and feature set) and rustdoc with warnings denied.
 
 The workflows in `.github/workflows/` delegate to the shared composite actions in [`amqp-rs/actions`](https://github.com/amqp-rs/actions) at `@main`. That reference is intentionally unpinned: `amqp-rs/actions` is our own repository and keeps action bumps in sync across all amqp-rs crates. The third-party actions it wraps use major tags and are bumped there by Dependabot, which is why this repository's Dependabot config covers `cargo` only; the exceptions are `dtolnay/rust-toolchain`, referenced by branch as upstream recommends, and the tools pinned through action inputs (`actionlint`, `cargo-hack`), bumped by hand there. Do not pin actions to a SHA or tag, and do not report unpinned actions as review or audit findings.
 

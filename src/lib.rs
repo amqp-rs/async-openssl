@@ -1,7 +1,7 @@
 //! Async TLS streams backed by OpenSSL.
 //!
 //! This crate provides a wrapper around the [`openssl`] crate's [`SslStream`](ssl::SslStream) type
-//! that works with with [`futures_io`]'s [`AsyncRead`] and [`AsyncWrite`] traits rather than std's
+//! that works with [`futures_io`]'s [`AsyncRead`] and [`AsyncWrite`] traits rather than std's
 //! blocking [`Read`] and [`Write`] traits.
 #![deny(missing_docs, missing_debug_implementations, unsafe_code)]
 #![warn(unreachable_pub, unused_qualifications, unused_lifetimes)]
@@ -25,6 +25,11 @@ use std::{
 
 #[cfg(test)]
 mod test;
+
+// Compiles the README's example as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 struct StreamWrapper<S: Unpin> {
     stream: S,
