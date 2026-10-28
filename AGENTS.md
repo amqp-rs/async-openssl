@@ -39,6 +39,6 @@ This is a small, focused crate: a single public type `SslStream<S>` wrapping `op
 
 **The bridging pattern:** OpenSSL's synchronous I/O model is bridged to async by an internal `StreamWrapper<S>` type that implements std `Read`/`Write` by calling `poll_read`/`poll_write` on the inner async stream. When the async stream returns `Poll::Pending`, `StreamWrapper` returns `WouldBlock`, and the two `cvt`/`cvt_ossl` helpers convert back from `WouldBlock` / `WANT_READ` / `WANT_WRITE` to `Poll::Pending`. The current waker is stored on `StreamWrapper` and updated each time `with_context` is called.
 
-**Feature gate:** `build.rs` detects the OpenSSL version via `DEP_OPENSSL_VERSION_NUMBER` and sets the `ossl111` cfg flag for OpenSSL ≥ 1.1.1. Methods guarded by `#[cfg(ossl111)]` expose TLS 1.3 early-data support.
+**Feature gate:** `build.rs` detects the OpenSSL version via `DEP_OPENSSL_VERSION_NUMBER` and sets the `ossl111` cfg flag for OpenSSL ≥ 1.1.1. `openssl-sys` must remain a direct target dependency so Cargo passes that metadata to the build script. Methods guarded by `#[cfg(ossl111)]` expose TLS 1.3 early-data support; LibreSSL only has stubs for early data, so they are not built there.
 
-**Tests** (`src/test.rs`) use `smol` as the async runtime. The TLS tests use local servers with the self-signed cert/key in `tests/`; they do not require an outbound connection.
+**Tests** (`src/test.rs`) use `smol` as the async runtime. The TLS tests use local servers with the self-signed cert/key in `tests/`; they do not require an outbound connection. A version check catches an `ossl111` cfg that does not match the linked library.

@@ -19,6 +19,12 @@ Forked from [tokio-openssl](https://github.com/tokio-rs/tokio-openssl) and
 reworked to target the runtime-agnostic `futures-io` traits rather than the
 tokio-specific ones.
 
+## Upgrading from 0.2.10
+
+- The early-data methods are back, on OpenSSL 1.1.1 or newer only: 0.2.10 never
+  compiled them. LibreSSL only has stubs for them, so they are not provided
+  there.
+
 ## Example
 
 ```rust,no_run

@@ -86,6 +86,13 @@ fn server() {
     smol::block_on(test_server()).unwrap();
 }
 
+#[test]
+fn early_data_cfg_matches_linked_openssl() {
+    let ossl111 = openssl::version::version().starts_with("OpenSSL")
+        && openssl::version::number() >= 0x1010_1000;
+    assert_eq!(cfg!(ossl111), ossl111);
+}
+
 /// Runs `client` against a local TLS peer that completes the handshake and then goes quiet,
 /// never sending `close_notify`.
 ///

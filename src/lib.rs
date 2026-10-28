@@ -201,6 +201,8 @@ where
     }
 
     /// Like [`SslStream::read_early_data`](ssl::SslStream::read_early_data).
+    ///
+    /// Requires OpenSSL 1.1.1 or newer (LibreSSL only has stubs for early data).
     #[cfg(ossl111)]
     pub fn poll_read_early_data(
         self: Pin<&mut Self>,
@@ -211,6 +213,8 @@ where
     }
 
     /// A convenience method wrapping [`poll_read_early_data`](Self::poll_read_early_data).
+    ///
+    /// Requires OpenSSL 1.1.1 or newer.
     #[cfg(ossl111)]
     pub async fn read_early_data(
         mut self: Pin<&mut Self>,
@@ -220,6 +224,8 @@ where
     }
 
     /// Like [`SslStream::write_early_data`](ssl::SslStream::write_early_data).
+    ///
+    /// Requires OpenSSL 1.1.1 or newer (LibreSSL only has stubs for early data).
     #[cfg(ossl111)]
     pub fn poll_write_early_data(
         self: Pin<&mut Self>,
@@ -230,6 +236,8 @@ where
     }
 
     /// A convenience method wrapping [`poll_write_early_data`](Self::poll_write_early_data).
+    ///
+    /// Requires OpenSSL 1.1.1 or newer.
     #[cfg(ossl111)]
     pub async fn write_early_data(
         mut self: Pin<&mut Self>,
