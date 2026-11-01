@@ -263,6 +263,9 @@ struct Call {
     write_error: Option<AssertUnwindSafe<io::Error>>,
     /// A transport read error kept from OpenSSL (`ErrorPath::ToCaller`).
     read_error: Option<AssertUnwindSafe<io::Error>>,
+    /// A transport error kept from OpenSSL that the next read hands it, as the reason the call
+    /// fails.
+    inject: Option<AssertUnwindSafe<io::Error>>,
 }
 
 /// What the transport did during one operation of the stream, which can make several OpenSSL
@@ -515,6 +518,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(AssertUnwindSafe(error)) = self.call.inject.take() {
+            self.call.read = LastRead::Failed;
+            return Err(error);
+        }
         // What OpenSSL waits for may be the answer to the output, so send it first.
         self.send(Flush::Requested);
         // Bound what OpenSSL writes by itself while reading: past the limit, wait for the
@@ -747,7 +754,10 @@ where
         future::poll_fn(|cx| self.as_mut().poll_peek(cx, buf)).await
     }
 
-    /// Like [`SslStream::read_early_data`](ssl::SslStream::read_early_data).
+    /// Like [`SslStream::read_early_data`](ssl::SslStream::read_early_data), except that a
+    /// handshake failure, or a transport failure or end, right after the early data is an error,
+    /// not the end of early data (`Ok(0)`). After the end of early data, it advances the handshake
+    /// without waiting; [`accept`](Self::accept) finishes it.
     ///
     /// An empty buffer returns `Ok(0)` if no early data was accepted or it is over, and an error
     /// once an early-data record arrives.
@@ -759,7 +769,46 @@ where
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, ssl::Error>> {
-        self.poll_ssl_op(cx, |s| s.read_early_data(buf))
+        self.poll_op(cx, |this| {
+            // Transport errors are kept from the first call: one right after the end of early data
+            // would make OpenSSL 4 fail the session without a reason. A second call gets it.
+            this.poll_ssl(ErrorPath::ToCaller, |s| {
+                let early = s.read_early_data(buf);
+                let over = matches!(early, Ok(0));
+                // Advance the handshake after the end of early data, or rejected early data. This
+                // also reports a handshake that failed in the same call: OpenSSL still returns the
+                // end of early data, and leaves the reason on the error queue for
+                // `SSL_do_handshake`.
+                let result = match early {
+                    Ok(0) => s.do_handshake().map(|()| 0),
+                    result => result,
+                };
+                let Err(error) = result else {
+                    return result;
+                };
+                // A kept error is why the call stopped only if it waited: then a second call hands
+                // it to OpenSSL. One kept from a call that OpenSSL failed by itself, such as
+                // sending its alert, is dropped.
+                let waited = matches!(s.get_ref().call.read, LastRead::Waiting);
+                match waited.then(|| s.get_mut().kept_error()).flatten() {
+                    Some(kept) => {
+                        s.get_mut().call.inject = Some(AssertUnwindSafe(kept));
+                        if over {
+                            s.do_handshake().map(|()| 0)
+                        } else {
+                            s.read_early_data(buf)
+                        }
+                    }
+                    // `accept` waits for the rest: `SSL_read_early_data` would fail now.
+                    None if over
+                        && matches!(error.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) =>
+                    {
+                        Ok(0)
+                    }
+                    None => Err(error),
+                }
+            })
+        })
     }
 
     /// A convenience method wrapping [`poll_read_early_data`](Self::poll_read_early_data).

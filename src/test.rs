@@ -60,6 +60,22 @@ fn join(thread: thread::JoinHandle<()>, what: &str) {
     }
 }
 
+/// Waits until the socket holds data and has stopped receiving more.
+#[cfg(ossl111)]
+async fn settled(socket: &Async<TcpStream>) {
+    let mut buf = vec![0; 64 * 1024];
+    let mut seen = 0;
+    loop {
+        socket.readable().await.unwrap();
+        Timer::after(Duration::from_millis(5)).await;
+        let now = socket.get_ref().peek(&mut buf).unwrap();
+        if now == seen {
+            return;
+        }
+        seen = now;
+    }
+}
+
 /// Waits until the socket holds `len` bytes that were not read yet.
 async fn holding(socket: &Async<TcpStream>, len: usize) {
     let mut buf = vec![0; len];
@@ -429,6 +445,8 @@ struct Faults {
     writes: Block,
     /// An error that the next `poll_read` returns instead of reading.
     read_error: Option<io::ErrorKind>,
+    /// How many more bytes reads deliver, then fail with the error, or end the stream.
+    failing_reads: Option<(usize, Option<io::ErrorKind>)>,
     /// Makes every `poll_read` report one more byte than it was given.
     over_reported_reads: bool,
     reads: Block,
@@ -530,7 +548,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for Faulty<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         ctx: &mut Context<'_>,
-        buf: &mut [u8],
+        mut buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         let faults = &mut self.faults;
         faults.read_polls.record(ctx.waker());
@@ -540,9 +558,19 @@ impl<S: AsyncRead + Unpin> AsyncRead for Faulty<S> {
         if let Some(kind) = faults.read_error.take() {
             return Poll::Ready(Err(injected(kind)));
         }
+        if let Some((left, end)) = faults.failing_reads {
+            if left == 0 {
+                return Poll::Ready(end.map_or(Ok(0), |kind| Err(injected(kind))));
+            }
+            let len = buf.len().min(left);
+            buf = &mut buf[..len];
+        }
         let over = faults.over_reported_reads;
         let result =
             std::task::ready!(self.poll_inner(ctx, |inner, ctx| inner.poll_read(ctx, buf)));
+        if let (Ok(n), Some((left, _))) = (&result, &mut self.faults.failing_reads) {
+            *left -= n;
+        }
         Poll::Ready(result.map(|n| n + usize::from(over && n > 0)))
     }
 }
@@ -1995,8 +2023,11 @@ fn an_enclosing_openssl_call_keeps_its_errors() {
 #[cfg(ossl111)]
 #[allow(unsafe_code)]
 mod unsafe_setup {
-    use openssl::ssl::{SslConnectorBuilder, SslRef, SslSessionRef};
-    use std::{os::raw::c_int, ptr};
+    use openssl::ssl::{SslAcceptor, SslConnectorBuilder, SslContextRef, SslRef, SslSessionRef};
+    use std::{
+        os::raw::{c_int, c_void},
+        ptr,
+    };
 
     unsafe extern "C" {
         fn SSL_CTX_set_tlsext_max_fragment_length(
@@ -2004,6 +2035,12 @@ mod unsafe_setup {
             mode: u8,
         ) -> c_int;
         fn SSL_verify_client_post_handshake(ssl: *mut openssl_sys::SSL) -> c_int;
+        fn SSL_CTX_set_session_ticket_cb(
+            ctx: *mut openssl_sys::SSL_CTX,
+            generate: Option<unsafe extern "C" fn(*mut openssl_sys::SSL, *mut c_void) -> c_int>,
+            decrypt: *const c_void,
+            arg: *mut c_void,
+        ) -> c_int;
     }
 
     /// The `SSL` pointer that `ssl` wraps: a reference to an `SslRef` is that pointer
@@ -2044,6 +2081,27 @@ mod unsafe_setup {
     pub(super) fn request_client_certificate(ssl: &SslRef) {
         // SAFETY: the pointer is valid while `ssl` is, and OpenSSL only queues a message on it.
         let ret = unsafe { SSL_verify_client_post_handshake(ssl_ptr(ssl)) };
+        assert_eq!(ret, 1);
+    }
+
+    unsafe extern "C" fn refuse_ticket(_: *mut openssl_sys::SSL, _: *mut c_void) -> c_int {
+        0
+    }
+
+    /// Makes `acceptor` fail to make session tickets, which fails the handshake that sends one.
+    pub(super) fn refuse_new_tickets(acceptor: &SslAcceptor) {
+        let context = acceptor.context() as *const SslContextRef as *mut openssl_sys::SSL_CTX;
+        // SAFETY: a reference to an `SslContextRef` is the `SSL_CTX` pointer it wraps
+        // (foreign-types), no handshake runs on it meanwhile, a null decryption callback keeps
+        // OpenSSL's own, and the generation callback uses none of its arguments.
+        let ret = unsafe {
+            SSL_CTX_set_session_ticket_cb(
+                context,
+                Some(refuse_ticket),
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        };
         assert_eq!(ret, 1);
     }
 
@@ -2348,6 +2406,97 @@ fn a_read_writes_a_session_ticket_behind_unsent_early_response() {
         assert_eq!(end, b"!");
         stream.close().await.unwrap();
     });
+}
+
+/// The server fails to make the resumed connection's ticket, right after the client's end of
+/// early data, in the same `SSL_read_early_data` call: that is no end of early data.
+#[cfg(ossl111)]
+#[test]
+fn a_handshake_failing_right_after_early_data_is_not_its_end() {
+    // Also when the server cannot send its alert: that is not why the handshake failed.
+    for alert_fails in [false, true] {
+        handshake_failing_right_after_early_data(alert_fails);
+    }
+}
+
+#[cfg(ossl111)]
+fn handshake_failing_right_after_early_data(alert_fails: bool) {
+    let resumable = resumable_session();
+    unsafe_setup::refuse_new_tickets(&resumable.acceptor);
+    let peer = Peer::spawn_unaccepted(resumable.acceptor.clone(), move |mut stream| async move {
+        let mut early = Vec::new();
+        let mut buf = [0; 16];
+        let error = loop {
+            match Pin::new(&mut stream).read_early_data(&mut buf).await {
+                Ok(0) => panic!("the handshake failure read as the end of early data"),
+                Ok(n) => early.extend_from_slice(&buf[..n]),
+                Err(error) => break error,
+            }
+            if alert_fails {
+                stream.get_mut().broken_writes = Some(io::ErrorKind::BrokenPipe);
+            }
+        };
+        assert_eq!(early, b"early");
+        let reason = error
+            .ssl_error()
+            .is_some_and(|stack| !stack.errors().is_empty());
+        assert!(reason, "{error:?}");
+    });
+    resumable.run(peer, |mut stream| async move {
+        let early = Pin::new(&mut stream).write_early_data(b"early").await;
+        assert_eq!(early.unwrap(), 5);
+        // The client's end of early data and Finished go out together, so that the server reads
+        // both in one call.
+        stream.get_mut().writes.on = true;
+        Pin::new(&mut stream).connect().await.unwrap();
+        stream.get_mut().writes.release();
+        stream.flush().await.unwrap();
+        let _ = stream.read_to_end(&mut Vec::new()).await;
+    });
+}
+
+/// The transport fails, or ends, right after the client's end of early data.
+#[cfg(ossl111)]
+fn transport_end_right_after_early_data(end: Option<io::ErrorKind>) {
+    let resumable = resumable_session();
+    let peer = Peer::spawn_unaccepted(resumable.acceptor.clone(), move |mut stream| async move {
+        let mut buf = [0; 16];
+        let n = Pin::new(&mut stream)
+            .read_early_data(&mut buf)
+            .await
+            .unwrap();
+        assert_eq!(&buf[..n], b"early");
+        settled(&stream.get_ref().inner).await;
+        // Only the 26-byte record of the end of early data gets through.
+        stream.get_mut().failing_reads = Some((26, end));
+        let error = Pin::new(&mut stream)
+            .read_early_data(&mut buf)
+            .await
+            .unwrap_err();
+        if let Some(kind) = end {
+            assert_injected_ssl(error, kind);
+        }
+    });
+    resumable.run(peer, |mut stream| async move {
+        let early = Pin::new(&mut stream).write_early_data(b"early").await;
+        assert_eq!(early.unwrap(), 5);
+        Pin::new(&mut stream).connect().await.unwrap();
+        let _ = stream.read_to_end(&mut Vec::new()).await;
+    });
+}
+
+#[cfg(ossl111)]
+#[test]
+fn a_transport_failing_right_after_early_data_is_not_its_end() {
+    for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::NotConnected] {
+        transport_end_right_after_early_data(Some(kind));
+    }
+}
+
+#[cfg(ossl111)]
+#[test]
+fn a_transport_ending_right_after_early_data_is_not_its_end() {
+    transport_end_right_after_early_data(None);
 }
 
 #[cfg(ossl111)]
