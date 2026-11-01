@@ -1943,6 +1943,54 @@ fn handshakes_and_peeks_report_transport_errors() {
     });
 }
 
+#[test]
+fn a_stale_openssl_error_does_not_fail_a_read() {
+    Peer::answering(b"ping", b"pong").run(|addr| async move {
+        let mut stream = connect(addr).await;
+        stream.write_all(b"ping").await.unwrap();
+        stream.get_mut().reads.on = true;
+        // Left on the thread's queue by unrelated code. OpenSSL < 4 and LibreSSL would take it
+        // as the reason that a read that has to wait failed.
+        openssl::x509::X509::from_pem(b"not a certificate")
+            .unwrap_err()
+            .put();
+        let mut buf = [0; 4];
+        assert_eq!(
+            poll_read(&mut stream, Waker::noop(), &mut buf),
+            Poll::Pending
+        );
+        // The entry is not the stream's to discard.
+        assert!(!openssl::error::ErrorStack::get().errors().is_empty());
+        stream.get_mut().reads.release();
+        stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+        stream.close().await.unwrap();
+    });
+}
+
+/// TLS inside TLS: the outer session's transport is an inner session.
+#[test]
+fn an_enclosing_openssl_call_keeps_its_errors() {
+    let peer = Peer::spawn(|inner| async move {
+        let ssl = Ssl::new(acceptor().context()).unwrap();
+        let mut outer = SslStream::new(ssl, inner).unwrap();
+        assert!(Pin::new(&mut outer).accept().await.is_err());
+    });
+    peer.run(|addr| async move {
+        let inner = connect(addr).await;
+        // The outer session does not trust the test certificate.
+        let connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
+        let mut outer = SslStream::new(ssl_for(&connector), inner).unwrap();
+        let error = Pin::new(&mut outer).connect().await.unwrap_err();
+        // The outer call's reason survives the inner calls that sent its alert.
+        let reason = error
+            .ssl_error()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(reason.contains("certificate verify failed"), "{error:?}");
+    });
+}
+
 /// Test-only setup that rust-openssl does not offer through safe code.
 #[cfg(ossl111)]
 #[allow(unsafe_code)]

@@ -182,6 +182,17 @@ impl Wake for WakerSet {
     }
 }
 
+/// Runs `f`, which calls OpenSSL, on an empty error queue, then puts the thread's entries back.
+/// OpenSSL and LibreSSL take any queued entry as the reason a call failed, even a call that only
+/// has to be retried, and the entries belong to other code, such as an OpenSSL call that uses this
+/// stream as its transport.
+fn keeping_foreign_errors<T>(f: impl FnOnce() -> T) -> T {
+    let foreign = ErrorStack::get();
+    let result = f();
+    foreign.put();
+    result
+}
+
 /// Whether the handshake is finished. rust-openssl binds `SSL_is_init_finished` for OpenSSL only;
 /// both libraries describe that state the same way.
 fn handshake_finished(ssl: &SslRef) -> bool {
@@ -874,23 +885,24 @@ where
         path: ErrorPath,
         mut f: impl FnMut(&mut ssl::SslStream<StreamWrapper<S>>) -> Result<T, ssl::Error>,
     ) -> Poll<Result<T, ssl::Error>> {
-        loop {
-            self.inner.get_mut().start_call(path);
-            let error = match f(&mut self.inner) {
-                Ok(value) => break Poll::Ready(Ok(value)),
-                Err(error) => error,
-            };
-            match (self.inner.get_ref().call.read, error.code()) {
-                (LastRead::Waiting, _) => break Poll::Pending,
-                (LastRead::Failed | LastRead::Eof, _) => break Poll::Ready(Err(error)),
-                // OpenSSL handled a record without application data and asks to be called
-                // again, which it only does without `SSL_MODE_AUTO_RETRY`, or LibreSSL finished
-                // a handshake inside `SSL_write`. As the BIO never refuses a write,
-                // `WANT_WRITE` can only mean the latter.
-                (LastRead::Data, ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {}
-                (LastRead::Data, _) => break Poll::Ready(Err(error)),
+        keeping_foreign_errors(|| {
+            loop {
+                self.inner.get_mut().start_call(path);
+                let error = match f(&mut self.inner) {
+                    Ok(value) => break Poll::Ready(Ok(value)),
+                    Err(error) => error,
+                };
+                match (self.inner.get_ref().call.read, error.code()) {
+                    (LastRead::Waiting, _) => break Poll::Pending,
+                    (LastRead::Failed | LastRead::Eof, _) => break Poll::Ready(Err(error)),
+                    // Call again: OpenSSL handled a record without application data (without
+                    // `SSL_MODE_AUTO_RETRY`), or LibreSSL finished a handshake inside `SSL_write`
+                    // (`WANT_WRITE`, as the BIO never refuses a write).
+                    (LastRead::Data, ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {}
+                    (LastRead::Data, _) => break Poll::Ready(Err(error)),
+                }
             }
-        }
+        })
     }
 
     /// Sets `SSL_SENT_SHUTDOWN`, which makes OpenSSL refuse every later write.
@@ -993,7 +1005,7 @@ where
                 // `SSL_shutdown` runs once, outside `poll_ssl` (see `Close::Sent`); the first call
                 // never reads.
                 this.inner.get_mut().start_call(ErrorPath::ThroughOpenSsl);
-                let shutdown = this.inner.shutdown();
+                let shutdown = keeping_foreign_errors(|| this.inner.shutdown());
                 let sent = this.inner.get_shutdown().contains(ShutdownState::SENT);
                 this.inner.get_mut().close = match shutdown {
                     Ok(_) if sent => Close::Sent,
