@@ -1,8 +1,8 @@
 use crate::{MAX_WAITERS, SslStream, StreamWrapper, WakerSet};
 use futures_io::{AsyncRead, AsyncWrite};
 use openssl::ssl::{
-    Ssl, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder, SslContext,
-    SslFiletype, SslMethod, SslOptions, SslVerifyMode, SslVersion,
+    ShutdownState, Ssl, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder,
+    SslContext, SslFiletype, SslMethod, SslOptions, SslVerifyMode, SslVersion,
 };
 use smol::{
     Async, Timer, future,
@@ -1851,6 +1851,40 @@ fn writes_after_close_fail() {
 }
 
 #[test]
+fn writes_after_close_fail_after_the_library_forgets_close_notify() {
+    Peer::receiving(|received| assert_eq!(received, b"")).run(|addr| async move {
+        let mut stream = connect(addr).await;
+        stream.close().await.unwrap();
+        // As OpenSSL 4 does when a read hits an unclean end under SSL_OP_IGNORE_UNEXPECTED_EOF.
+        // The wrapper would otherwise discard the write, which would then succeed.
+        stream.inner.set_shutdown(ShutdownState::RECEIVED);
+        assert_eq!(stream.read(&mut [0; 4]).await.unwrap(), 0);
+        assert!(stream.write(b"data").await.is_err());
+    });
+}
+
+#[test]
+fn writes_after_close_fail_after_an_unclean_end_too() {
+    // `SSL_OP_IGNORE_UNEXPECTED_EOF` exists from OpenSSL 3.0 on.
+    if !openssl_from(0x3000_0000) {
+        return;
+    }
+    let peer = Peer::spawn(|mut stream| async move {
+        stream.write_all(b"hello").await.unwrap();
+        // Takes the client's close_notify, then goes away without sending its own.
+        stream.read_to_end(&mut Vec::new()).await.unwrap();
+    });
+    peer.run(|addr| async move {
+        let mut stream = connect_with(addr, client_ssl_with(ignore_unexpected_eof)).await;
+        stream.close().await.unwrap();
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"hello");
+        assert!(stream.write(b"data").await.is_err());
+    });
+}
+
+#[test]
 fn a_stream_cut_without_close_notify_ends_or_fails_by_openssl_version() {
     let peer = Peer::spawn(|mut stream| async move {
         stream.write_all(b"hello").await.unwrap();
@@ -2035,6 +2069,7 @@ mod unsafe_setup {
             mode: u8,
         ) -> c_int;
         fn SSL_verify_client_post_handshake(ssl: *mut openssl_sys::SSL) -> c_int;
+        fn SSL_key_update(ssl: *mut openssl_sys::SSL, update_type: c_int) -> c_int;
         fn SSL_CTX_set_session_ticket_cb(
             ctx: *mut openssl_sys::SSL_CTX,
             generate: Option<unsafe extern "C" fn(*mut openssl_sys::SSL, *mut c_void) -> c_int>,
@@ -2081,6 +2116,14 @@ mod unsafe_setup {
     pub(super) fn request_client_certificate(ssl: &SslRef) {
         // SAFETY: the pointer is valid while `ssl` is, and OpenSSL only queues a message on it.
         let ret = unsafe { SSL_verify_client_post_handshake(ssl_ptr(ssl)) };
+        assert_eq!(ret, 1);
+    }
+
+    /// Makes the next message update our keys and ask the peer to update its own (TLS 1.3).
+    pub(super) fn request_key_update(ssl: &SslRef) {
+        const SSL_KEY_UPDATE_REQUESTED: c_int = 1;
+        // SAFETY: the pointer is valid while `ssl` is, and OpenSSL only queues a message on it.
+        let ret = unsafe { SSL_key_update(ssl_ptr(ssl), SSL_KEY_UPDATE_REQUESTED) };
         assert_eq!(ret, 1);
     }
 
@@ -2165,6 +2208,32 @@ fn a_read_answers_a_post_handshake_certificate_request_behind_unsent_output() {
         assert_eq!(&buf, b"hello");
         stream.get_mut().writes.release();
         stream.close().await.unwrap();
+    });
+}
+
+/// After close_notify, OpenSSL still answers the peer's key update requests from inside reads;
+/// that answer must not go out.
+#[cfg(ossl111)]
+#[test]
+fn nothing_goes_out_after_close_notify() {
+    let peer = Peer::spawn(|mut stream| async move {
+        // Answers the client's close_notify, asking for key updates.
+        stream.read_to_end(&mut Vec::new()).await.unwrap();
+        for part in [b"a", b"b", b"c"] {
+            unsafe_setup::request_key_update(stream.ssl());
+            stream.write_all(part).await.unwrap();
+        }
+        stream.close().await.unwrap();
+    });
+    peer.run(|addr| async move {
+        let mut stream = connect(addr).await;
+        stream.close().await.unwrap();
+        let (polls, flushes) = (stream.get_ref().write_polls.count, stream.get_ref().flushes);
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"abc");
+        assert_eq!(stream.get_ref().write_polls.count, polls);
+        assert_eq!(stream.get_ref().flushes, flushes);
     });
 }
 

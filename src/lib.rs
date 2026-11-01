@@ -317,7 +317,8 @@ struct StreamWrapper<S: Unpin> {
     poisoned: bool,
     /// The payload of that panic, resumed once the operation's bookkeeping is done.
     panic: Mutex<Option<Box<dyn Any + Send>>>,
-    /// Whether the stream was closed.
+    /// Whether the stream was closed. Nothing OpenSSL writes by itself afterwards, such as the
+    /// answer to a key update, may go out.
     close: Close,
     op: Op,
     call: Call,
@@ -563,6 +564,9 @@ where
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // Nothing more may go out after a transport panic, and OpenSSL may as well know.
         self.check_poisoned()?;
+        if !matches!(self.close, Close::Open) {
+            return Ok(buf.len());
+        }
         let mut written = 0;
         // Skip the copy when nothing is buffered, which is the common case.
         if self.out.is_empty() && self.may_send() {
@@ -581,6 +585,9 @@ where
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if !matches!(self.close, Close::Open) {
+            return Ok(());
+        }
         // Never fails: a failed flush leaves `SSL_write_early_data` counting its next bytes as
         // written without writing them. The next send finishes the flush.
         self.flush_needed = true;
@@ -645,13 +652,13 @@ enum Close {
 ///
 /// # Closing
 ///
-/// A close sends the output left, writes `close_notify` once, sends it and closes the transport.
-/// If it cannot send, it returns the error without closing the transport, so that closing again
-/// retries; dropping the stream releases the transport. After the peer's `close_notify`, failing
-/// to send ours is no error. If there is no session to close (no handshake, a handshake or a
-/// post-handshake exchange in progress, or a session that failed), the close closes the transport
-/// and returns OpenSSL's reason, if it gave one, or the transport's error if closing it failed;
-/// every later close returns an error too.
+/// A close sends buffered output, writes `close_notify` once, sends it and closes the transport.
+/// A send error is returned with the transport left open, so that closing again retries; dropping
+/// the stream releases the transport. After the peer's `close_notify`, failing to send ours is no
+/// error. Without a session to close (no handshake, a handshake or post-handshake exchange in
+/// progress, or a failed session), a close closes the transport and returns an error: the
+/// transport's if closing it failed, else OpenSSL's reason, if any. So does every later close. No
+/// write goes out after a close.
 ///
 /// # Tasks
 ///
@@ -913,6 +920,12 @@ where
         let generation = wrapper.wakers.generation();
         wrapper.op = Op::default();
         let result = op(this);
+        // After a close, OpenSSL must refuse writes, which without a session would start a
+        // handshake. This also restores `SSL_SENT_SHUTDOWN` where OpenSSL 4 clears it (an unclean
+        // end under `SSL_OP_IGNORE_UNEXPECTED_EOF`), which keeps the session cached.
+        if !matches!(this.inner.get_ref().close, Close::Open) {
+            this.refuse_writes();
+        }
         let wrapper = this.wrapper();
         if wrapper.op.send_failed || wrapper.op.read_progress {
             wrapper.wakers.wake_tasks(false, !wrapper.op.send_failed);
@@ -1066,9 +1079,6 @@ where
                         Close::NoSession(Some(AssertUnwindSafe(error)))
                     }
                 };
-                // Without a session, OpenSSL then refuses later writes, which would start a
-                // handshake.
-                this.refuse_writes();
             }
             if matches!(this.inner.get_ref().close, Close::NoSession(_)) {
                 // A transport that fails to close says so first, and keeps the reason for the
