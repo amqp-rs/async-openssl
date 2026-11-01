@@ -64,6 +64,8 @@ or `NotConnected`, and LibreSSL returns an error of its own instead.
 - One write hands OpenSSL at most 16 KiB, even without
   `SSL_MODE_ENABLE_PARTIAL_WRITE`.
 - Reads flush the transport before they wait for the peer.
+- A read that drives the handshake fails when the transport ends, or a
+  `close_notify` arrives, before the handshake is over; 0.2.10 ended the stream.
 - A close without a TLS session to close (no handshake, a handshake in progress,
   a failed session) closes the transport, then returns an error, and so does
   every later close; 0.2.10 returned the error with the transport still open.

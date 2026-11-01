@@ -2,7 +2,7 @@ use crate::{MAX_WAITERS, SslStream, StreamWrapper, WakerSet};
 use futures_io::{AsyncRead, AsyncWrite};
 use openssl::ssl::{
     Ssl, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder, SslContext,
-    SslFiletype, SslMethod, SslVerifyMode, SslVersion,
+    SslFiletype, SslMethod, SslOptions, SslVerifyMode, SslVersion,
 };
 use smol::{
     Async, Timer, future,
@@ -138,6 +138,12 @@ fn client_ssl_with(configure: impl FnOnce(&mut SslConnectorBuilder)) -> Ssl {
     let mut connector = connector();
     configure(&mut connector);
     ssl_for(&connector.build())
+}
+
+/// Sets `SSL_OP_IGNORE_UNEXPECTED_EOF` (OpenSSL 3.0 or newer), which rust-openssl only names
+/// under a cfg this crate cannot see.
+fn ignore_unexpected_eof(connector: &mut SslConnectorBuilder) {
+    connector.set_options(SslOptions::from_bits_retain(1 << 7));
 }
 
 fn client_ssl() -> Ssl {
@@ -1734,6 +1740,48 @@ fn a_write_does_not_ask_a_transport_that_refused_a_flush() {
         stream.get_mut().flushes_blocked.release();
         stream.close().await.unwrap();
     });
+}
+
+/// A server that reads the whole ClientHello, so that its close is a clean end, not a reset, and
+/// then goes away without a handshake, after a plaintext warning close_notify if `alert`, which
+/// anyone on the path can send.
+fn handshake_cut_off(alert: bool) -> Peer {
+    Peer::spawn_unaccepted(acceptor(), move |mut stream| async move {
+        let transport = stream.get_mut();
+        let mut header = [0; 5];
+        transport.read_exact(&mut header).await.unwrap();
+        let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+        transport.read_exact(&mut vec![0; len]).await.unwrap();
+        if alert {
+            let close_notify = [0x15, 0x03, 0x03, 0x00, 0x02, 0x01, 0x00];
+            transport.write_all(&close_notify).await.unwrap();
+        }
+    })
+}
+
+#[test]
+fn a_handshake_cut_off_under_a_lazy_read_is_an_error() {
+    // The end without an alert is a `SYSCALL` before OpenSSL 4. A close_notify reads as
+    // `ZERO_RETURN` everywhere, and so does that end under `SSL_OP_IGNORE_UNEXPECTED_EOF` on
+    // OpenSSL 4.
+    for (alert, ignore_eof) in [(false, false), (true, false), (false, true)] {
+        if ignore_eof && !openssl_from(0x3000_0000) {
+            continue;
+        }
+        handshake_cut_off(alert).run(move |addr| async move {
+            let ssl = client_ssl_with(|connector| {
+                if ignore_eof {
+                    ignore_unexpected_eof(connector);
+                }
+            });
+            let mut stream = lazy_client_stream(addr, ssl).await;
+            let result = stream.read_to_end(&mut Vec::new()).await;
+            assert!(
+                result.is_err(),
+                "alert: {alert}, ignore_eof: {ignore_eof}: {result:?}"
+            );
+        });
+    }
 }
 
 #[test]

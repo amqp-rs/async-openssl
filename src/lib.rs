@@ -182,6 +182,12 @@ impl Wake for WakerSet {
     }
 }
 
+/// Whether the handshake is finished. rust-openssl binds `SSL_is_init_finished` for OpenSSL only;
+/// both libraries describe that state the same way.
+fn handshake_finished(ssl: &SslRef) -> bool {
+    ssl.state_string_long() == "SSL negotiation finished successfully"
+}
+
 /// Writes `buf` from `*written` on until the transport took all of it, returned `Pending` or
 /// failed.
 fn poll_write_all<S: AsyncWrite + ?Sized>(
@@ -613,9 +619,11 @@ enum Close {
 /// the transport error again later as the cause of an unrelated end of stream.
 /// [`write_early_data`](Self::write_early_data) never returns them.
 ///
-/// When the transport ends without `close_notify`, reads report the end of the stream on OpenSSL
-/// 1.1.1, 3.x and LibreSSL, as rust-openssl's own streams do, and an error on OpenSSL 4, unless
-/// the session has `SslOptions::IGNORE_UNEXPECTED_EOF`; a close then fails too.
+/// A transport end without `close_notify` after the handshake reads as the end of the stream on
+/// OpenSSL 1.1.1, 3.x and LibreSSL, as with rust-openssl's own streams. On OpenSSL 4 it is an
+/// error, and a close then fails too, unless the session has `SslOptions::IGNORE_UNEXPECTED_EOF`.
+/// A transport end or a `close_notify` during a handshake that a read drives, renegotiation
+/// included, is always an error.
 ///
 /// # Closing
 ///
@@ -930,14 +938,16 @@ where
         }
         self.poll_op(cx, |this| {
             this.poll_ssl_io(|s| match s.ssl_read(buf) {
-                // Like `Read for ssl::SslStream`, end the stream after `close_notify`, and at the
-                // transport's end where the library reports it as `SYSCALL`: OpenSSL 1.1.1, 3.x and
-                // LibreSSL, since rust-openssl's BIO does not report its end. OpenSSL 4 reports an
-                // error instead, unless `SSL_OP_IGNORE_UNEXPECTED_EOF` makes it end the stream.
+                // Like `Read for ssl::SslStream`, end the stream at `close_notify` (also OpenSSL
+                // 4's unclean end under `SSL_OP_IGNORE_UNEXPECTED_EOF`), and at the transport's end
+                // where the library reports it as `SYSCALL` (all but OpenSSL 4, as rust-openssl's
+                // BIO does not report its end). Not during a handshake, renegotiation included: no
+                // session was made.
                 Err(error)
-                    if error.code() == ErrorCode::ZERO_RETURN
+                    if (error.code() == ErrorCode::ZERO_RETURN
                         || (error.code() == ErrorCode::SYSCALL
-                            && matches!(s.get_ref().call.read, LastRead::Eof)) =>
+                            && matches!(s.get_ref().call.read, LastRead::Eof)))
+                        && handshake_finished(s.ssl()) =>
                 {
                     Ok(0)
                 }
