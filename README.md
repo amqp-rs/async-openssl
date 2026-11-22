@@ -1,7 +1,7 @@
 <div align="center">
 
 [![API Docs](https://docs.rs/async-openssl/badge.svg)](https://docs.rs/async-openssl)
-[![Build status](https://github.com/amqp-rs/async-openssl/workflows/Build%20and%20test/badge.svg)](https://github.com/amqp-rs/async-openssl/actions)
+[![Build status](https://github.com/amqp-rs/async-openssl/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/amqp-rs/async-openssl/actions/workflows/build-and-test.yaml)
 [![Downloads](https://img.shields.io/crates/d/async-openssl.svg)](https://crates.io/crates/async-openssl)
 [![Dependency Status](https://deps.rs/repo/github/amqp-rs/async-openssl/status.svg)](https://deps.rs/repo/github/amqp-rs/async-openssl)
 [![LICENSE](https://img.shields.io/crates/l/async-openssl)](LICENSE-MIT)
