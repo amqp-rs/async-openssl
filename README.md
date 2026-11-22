@@ -20,6 +20,39 @@ reworked to target the runtime-agnostic `futures-io` traits rather than the
 tokio-specific ones. It builds against OpenSSL 1.1.0 or newer and LibreSSL 3.5
 or newer.
 
+The minimum supported Rust version is 1.85.
+
+## Example
+
+```rust,no_run
+use async_openssl::SslStream;
+use openssl::ssl::{SslConnector, SslMethod};
+use smol::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+use std::pin::Pin;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    smol::block_on(async {
+        let connector = SslConnector::builder(SslMethod::tls())?.build();
+        let ssl = connector.configure()?.into_ssl("example.com")?;
+        let stream = TcpStream::connect(("example.com", 443)).await?;
+        let mut stream = SslStream::new(ssl, stream)?;
+        Pin::new(&mut stream).connect().await?;
+
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await?;
+        println!("{}", String::from_utf8_lossy(&response));
+        stream.close().await?;
+        Ok(())
+    })
+}
+```
+
 ## Buffered writes
 
 OpenSSL requires a write that the transport refused to be retried with the same
@@ -76,39 +109,3 @@ or `NotConnected`, and LibreSSL returns an error of its own instead.
 - The early-data methods are back, on OpenSSL 1.1.1 or newer only: 0.2.10 never
   compiled them. LibreSSL only has stubs for them, so they are not provided
   there.
-
-## Example
-
-```rust,no_run
-use async_openssl::SslStream;
-use openssl::ssl::{SslConnector, SslMethod};
-use smol::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
-use std::pin::Pin;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    smol::block_on(async {
-        let connector = SslConnector::builder(SslMethod::tls())?.build();
-        let ssl = connector.configure()?.into_ssl("example.com")?;
-        let stream = TcpStream::connect(("example.com", 443)).await?;
-        let mut stream = SslStream::new(ssl, stream)?;
-        Pin::new(&mut stream).connect().await?;
-
-        stream
-            .write_all(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
-            .await?;
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await?;
-        println!("{}", String::from_utf8_lossy(&response));
-        stream.close().await?;
-        Ok(())
-    })
-}
-```
-
-## License
-
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.

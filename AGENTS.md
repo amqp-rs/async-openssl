@@ -33,7 +33,7 @@ The workflows in `.github/workflows/` delegate to the shared reusable workflows 
 
 The build workflow asks for a 30-minute job timeout (`timeout-minutes`) instead of the shared workflow's 60 minutes: a test stuck inside one poll is caught by the tests' own `join`, and anything else that hangs fails sooner.
 
-Minimum supported Rust version: **1.85.0** (edition 2024). Supported TLS libraries: OpenSSL 1.1.0 or newer and LibreSSL 3.5 or newer, as the openssl-sys floor allows; the early-data methods need OpenSSL 1.1.1 or newer.
+Minimum supported Rust version: **1.85.0** (edition 2024). The README states it too. Supported TLS libraries: OpenSSL 1.1.0 or newer and LibreSSL 3.5 or newer, as the openssl-sys floor allows; the early-data methods need OpenSSL 1.1.1 or newer.
 
 ## Architecture
 
